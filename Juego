@@ -1,1 +1,519 @@
-#<include stdio.h>
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <time.h>
+#include <string.h>
+
+#define MAX_JUGADORES 4
+
+/* Tablero visual 7x7 */
+#define TAB_FILAS     7
+#define TAB_COLUMNAS  7
+
+/* Borde: 24 casillas (perimetro completo) */
+#define CASILLAS_PERIMETRO 24
+
+/* Puente: desde la casilla de entrada hasta el centro
+   puentePos:
+   0 -> casilla de entrada (borde abajo centro)
+   1 -> (5,3)
+   2 -> (4,3)
+   3 -> (3,3) centro (meta)
+*/
+#define PUENTE_LONGITUD 3   /* pasos para ir de entrada a centro (1..3) */
+#define PUENTE_ENTRADA_INDEX 15 /* casilla del perimetro que es la entrada */
+
+/* Colores ANSI */
+#define ANSI_RESET     "\x1b[0m"
+#define ANSI_AZUL      "\x1b[34m"
+#define ANSI_ROJO      "\x1b[31m"
+#define ANSI_VERDE     "\x1b[32m"
+#define ANSI_AMARILLO  "\x1b[33m"
+
+typedef enum {
+    COLOR_AZUL = 0,
+    COLOR_ROJO,
+    COLOR_VERDE,
+    COLOR_AMARILLO
+} Color;
+
+typedef struct {
+    char  nombre[30];
+    Color color;
+    char  inicial;        /* A, R, V, M */
+
+    int   inicioIndex;    /* casilla inicial en el perimetro (0..23) */
+    int   perimIndex;     /* casilla actual en el perimetro (0..23) */
+    int   pasosPerimetro; /* cuantos pasos ha dado sobre el borde */
+    int   enPuente;       /* 0 si aun no esta en el puente, 1 si ya entro */
+    int   puentePos;      /* 0..3: posicion dentro del puente */
+
+    int   fila;           /* posicion actual en el tablero (visual) */
+    int   col;
+    int   activo;         /* 1 si sigue en juego */
+} Jugador;
+
+/* Prototipos */
+void limpiarPantalla();
+void limpiarBufferEntrada();
+void esperarEnter();
+
+void mostrarMenuPrincipal();
+void mostrarReglas();
+
+void iniciarJuego();
+void inicializarJugadores(Jugador *jugadores, int numJugadores);
+void asignarColoresAleatorios(Jugador *jugadores, int numJugadores);
+void asignarInicios(Jugador *jugadores, int numJugadores);
+
+int  tirarDado();
+
+void actualizarCoordenadas(Jugador *j);
+void dibujarTablero(Jugador *jugadores, int numJugadores);
+
+void moverJugador(Jugador *jugadores, int numJugadores,
+                  int indiceJugador, int tirada);
+int  verificarGanador(Jugador *jugadores, int numJugadores);
+
+/* ------------------- Utilidades ------------------- */
+
+void limpiarPantalla() {
+    system("cls || clear");
+}
+
+void limpiarBufferEntrada() {
+    int c;
+    while ((c = getchar()) != '\n' && c != EOF) {
+        /* nada */
+    }
+}
+
+void esperarEnter() {
+    printf("\nPresiona ENTER para continuar...");
+    fflush(stdout);
+    getchar();
+}
+
+/* ------------------- Menus ------------------- */
+
+void mostrarMenuPrincipal() {
+	printf("______  ___  ______  _____  _   _ _____ _____ \n");
+	printf("| ___ \\/ _ \\ | ___ \\/  __ \\| | | |_   _/  ___|\n");
+	printf("| |_/ / /_\\ \\| |_/ /| /  \\/| |_| | | | \\ `--. \n");
+	printf("|  __/|  _  ||    / | |    |  _  | | |  `--. \\\n");
+	printf("| |   | | | || |\\ \\ | \\__/\\| | | |_| |_|\\__/ /\n");
+	printf("\\_|   \\_| |_/\\_| \\_| \\____/\\_| |_/\\___/\\____/ \n\n");
+    printf("1.- Reglas\n");
+    printf("2.- Iniciar juego\n");
+    printf("3.- Abandonar\n");
+    printf("Elige una opcion: ");
+}
+
+void mostrarReglas() {
+    int opcion = 0;
+
+    do {
+        limpiarPantalla();
+        printf("============= REGLAS =============\n\n");
+        printf("- De 2 a 4 jugadores.\n");
+        printf("- Una ficha por jugador.\n");
+        printf("- Colores: AZUL, ROJO, VERDE, AMARILLO.\n");
+        printf("- Cada jugador inicia en una esquina distinta del borde.\n");
+        printf("- La ficha se mueve en sentido horario sobre el borde.\n");
+        printf("- El dado es de 1 a 6.\n");
+        printf("- Deben dar al menos una vuelta completa al borde.\n");
+        printf("- En la segunda vuelta, cuando caen en la casilla de\n");
+        printf("  entrada al puente, empiezan a subir hacia el centro.\n");
+        printf("- Para ganar se necesita numero exacto para quedar en el centro.\n");
+        printf("- Si una ficha cae en la casilla de otra, la come.\n");
+        printf("- El jugador comido queda fuera del juego.\n\n");
+
+        printf("1.- Regresar a menu principal\n");
+        printf("2.- Abandonar juego\n");
+        printf("Elige una opcion: ");
+        if (scanf("%d", &opcion) != 1) {
+            opcion = 0;
+        }
+        limpiarBufferEntrada();
+
+        if (opcion == 2) {
+            printf("\nSaliendo del juego...\n");
+            exit(0);
+        }
+
+    } while (opcion != 1);
+}
+
+/* ------------------- Logica de juego ------------------- */
+
+void iniciarJuego() {
+    Jugador jugadores[MAX_JUGADORES];
+    int numJugadores = 0;
+    int turnoActual = 0;
+    int ganador = -1;
+
+    limpiarPantalla();
+
+    do {
+        printf("Cuantos jugadores jugaran (2-4): ");
+        if (scanf("%d", &numJugadores) != 1) {
+            numJugadores = 0;
+        }
+        limpiarBufferEntrada();
+        if (numJugadores < 2 || numJugadores > 4) {
+            printf("Cantidad invalida. Debe ser entre 2 y 4.\n");
+        }
+    } while (numJugadores < 2 || numJugadores > 4);
+
+    inicializarJugadores(jugadores, numJugadores);
+
+    turnoActual = rand() % numJugadores;
+
+    while (1) {
+        Jugador *jActual = &jugadores[turnoActual];
+
+        if (!jActual->activo) {
+            turnoActual = (turnoActual + 1) % numJugadores;
+            continue;
+        }
+
+        limpiarPantalla();
+        printf("======= TABLERO =======\n\n");
+        dibujarTablero(jugadores, numJugadores);
+
+        printf("\nTurno de %s (color ", jActual->nombre);
+        switch (jActual->color) {
+            case COLOR_AZUL:     printf("AZUL"); break;
+            case COLOR_ROJO:     printf("ROJO"); break;
+            case COLOR_VERDE:    printf("VERDE"); break;
+            case COLOR_AMARILLO: printf("AMARILLO"); break;
+        }
+        printf(")\n");
+
+        printf("Presiona ENTER para tirar el dado...");
+        getchar();
+
+        {
+            int tirada = tirarDado();
+            printf("\nHa salido un %d.\n", tirada);
+            moverJugador(jugadores, numJugadores, turnoActual, tirada);
+        }
+
+        ganador = verificarGanador(jugadores, numJugadores);
+        if (ganador != -1) {
+            limpiarPantalla();
+            dibujarTablero(jugadores, numJugadores);
+            printf("\n=====================================\n");
+            printf("El ganador es: %s con el color ",
+                   jugadores[ganador].nombre);
+            switch (jugadores[ganador].color) {
+                case COLOR_AZUL:
+                    printf(ANSI_AZUL "Azul" ANSI_RESET); break;
+                case COLOR_ROJO:
+                    printf(ANSI_ROJO "Rojo" ANSI_RESET); break;
+                case COLOR_VERDE:
+                    printf(ANSI_VERDE "Verde" ANSI_RESET); break;
+                case COLOR_AMARILLO:
+                    printf(ANSI_AMARILLO "Amarillo" ANSI_RESET); break;
+            }
+            printf("\nFelicidades!\n");
+            printf("=====================================\n");
+            esperarEnter();
+            break;
+        }
+
+        esperarEnter();
+        turnoActual = (turnoActual + 1) % numJugadores;
+    }
+}
+
+void inicializarJugadores(Jugador *jugadores, int numJugadores) {
+    int i;
+
+    printf("\nIntroduce el nombre de cada jugador:\n");
+    for (i = 0; i < numJugadores; i++) {
+        printf("Jugador %d: ", i + 1);
+        fgets(jugadores[i].nombre, sizeof(jugadores[i].nombre), stdin);
+        {
+            size_t len = strlen(jugadores[i].nombre);
+            if (len > 0 && jugadores[i].nombre[len - 1] == '\n') {
+                jugadores[i].nombre[len - 1] = '\0';
+            }
+        }
+
+        jugadores[i].pasosPerimetro = 0;
+        jugadores[i].enPuente       = 0;
+        jugadores[i].puentePos      = 0;
+        jugadores[i].activo         = 1;
+    }
+
+    asignarColoresAleatorios(jugadores, numJugadores);
+    asignarInicios(jugadores, numJugadores);
+
+    for (i = 0; i < numJugadores; i++) {
+        jugadores[i].perimIndex = jugadores[i].inicioIndex;
+        actualizarCoordenadas(&jugadores[i]);
+    }
+}
+
+void asignarColoresAleatorios(Jugador *jugadores, int numJugadores) {
+    Color coloresDisponibles[MAX_JUGADORES] = {
+        COLOR_AZUL, COLOR_ROJO, COLOR_VERDE, COLOR_AMARILLO
+    };
+    int usados[MAX_JUGADORES] = {0, 0, 0, 0};
+    int i;
+
+    for (i = 0; i < numJugadores; i++) {
+        int idx;
+        do {
+            idx = rand() % MAX_JUGADORES;
+        } while (usados[idx]);
+
+        usados[idx] = 1;
+        jugadores[i].color = coloresDisponibles[idx];
+
+        switch (jugadores[i].color) {
+            case COLOR_AZUL:     jugadores[i].inicial = 'A'; break;
+            case COLOR_ROJO:     jugadores[i].inicial = 'R'; break;
+            case COLOR_VERDE:    jugadores[i].inicial = 'V'; break;
+            case COLOR_AMARILLO: jugadores[i].inicial = 'M'; break;
+        }
+    }
+}
+
+/* Asignamos esquinas del perimetro como posiciones iniciales */
+void asignarInicios(Jugador *jugadores, int numJugadores) {
+    if (numJugadores == 2) {
+        jugadores[0].inicioIndex = 0;   /* esquina sup izq */
+        jugadores[1].inicioIndex = 12;  /* esquina inf der */
+    } else if (numJugadores == 3) {
+        jugadores[0].inicioIndex = 0;
+        jugadores[1].inicioIndex = 8;
+        jugadores[2].inicioIndex = 16;
+    } else { /* 4 jugadores */
+        jugadores[0].inicioIndex = 0;   /* sup izq */
+        jugadores[1].inicioIndex = 6;   /* sup der */
+        jugadores[2].inicioIndex = 12;  /* inf der */
+        jugadores[3].inicioIndex = 18;  /* inf izq */
+    }
+}
+
+int tirarDado() {
+    return (rand() % 6) + 1;
+}
+
+/* Actualiza fila y col segun perimIndex o puentePos */
+void actualizarCoordenadas(Jugador *j) {
+    static const int perim[CASILLAS_PERIMETRO][2] = {
+        /* borde superior (0..6) */
+        {0,0}, {0,1}, {0,2}, {0,3}, {0,4}, {0,5}, {0,6},
+        /* lado derecho (7..11) */
+        {1,6}, {2,6}, {3,6}, {4,6}, {5,6},
+        /* borde inferior (12..18) */
+        {6,6}, {6,5}, {6,4}, {6,3}, {6,2}, {6,1}, {6,0},
+        /* lado izquierdo (19..23) */
+        {5,0}, {4,0}, {3,0}, {2,0}, {1,0}
+    };
+
+    /* puente de entrada al centro:
+       puentePos 0 -> casilla de entrada (mismo que perim[15] = (6,3))
+       puentePos 1 -> (5,3)
+       puentePos 2 -> (4,3)
+       puentePos 3 -> (3,3) centro
+    */
+    static const int puente[PUENTE_LONGITUD + 1][2] = {
+        {6,3}, /* entrada, misma casilla que en el perimetro */
+        {5,3},
+        {4,3},
+        {3,3}
+    };
+
+    if (!j->enPuente || j->puentePos == 0) {
+        int idx = j->perimIndex % CASILLAS_PERIMETRO;
+        if (idx < 0) idx += CASILLAS_PERIMETRO;
+        j->fila = perim[idx][0];
+        j->col  = perim[idx][1];
+    } else {
+        int k = j->puentePos;
+        if (k < 0) k = 0;
+        if (k > PUENTE_LONGITUD) k = PUENTE_LONGITUD;
+        j->fila = puente[k][0];
+        j->col  = puente[k][1];
+    }
+}
+
+/* Dibuja tablero 7x7 con puntos y fichas */
+void dibujarTablero(Jugador *jugadores, int numJugadores) {
+    char tablero[TAB_FILAS][TAB_COLUMNAS];
+    int dueno[TAB_FILAS][TAB_COLUMNAS];
+    int fila, col;
+    int i;
+
+    for (fila = 0; fila < TAB_FILAS; fila++) {
+        for (col = 0; col < TAB_COLUMNAS; col++) {
+            tablero[fila][col] = ' ';
+            dueno[fila][col] = -1;
+        }
+    }
+
+    /* borde de puntos */
+    for (fila = 0; fila < TAB_FILAS; fila++) {
+        for (col = 0; col < TAB_COLUMNAS; col++) {
+            if (fila == 0 || fila == TAB_FILAS - 1 ||
+                col == 0 || col == TAB_COLUMNAS - 1) {
+                tablero[fila][col] = '.';
+            }
+        }
+    }
+
+    /* columna central de puntos (puente visual) */
+    for (fila = 3; fila <= 5; fila++) {
+        tablero[fila][TAB_COLUMNAS / 2] = '.';
+    }
+
+    /* colocar fichas */
+    for (i = 0; i < numJugadores; i++) {
+        Jugador *j = &jugadores[i];
+        if (!j->activo) continue;
+
+        if (j->fila >= 0 && j->fila < TAB_FILAS &&
+            j->col  >= 0 && j->col  < TAB_COLUMNAS) {
+            dueno[j->fila][j->col] = i;
+        }
+    }
+
+    /* imprimir tablero */
+    for (fila = 0; fila < TAB_FILAS; fila++) {
+        for (col = 0; col < TAB_COLUMNAS; col++) {
+            int idx = dueno[fila][col];
+            if (idx != -1) {
+                Jugador *j = &jugadores[idx];
+                const char *colorAnsi = ANSI_RESET;
+                switch (j->color) {
+                    case COLOR_AZUL:     colorAnsi = ANSI_AZUL; break;
+                    case COLOR_ROJO:     colorAnsi = ANSI_ROJO; break;
+                    case COLOR_VERDE:    colorAnsi = ANSI_VERDE; break;
+                    case COLOR_AMARILLO: colorAnsi = ANSI_AMARILLO; break;
+                }
+                printf("%s%c%s ", colorAnsi, j->inicial, ANSI_RESET);
+            } else {
+                printf("%c ", tablero[fila][col]);
+            }
+        }
+        printf("\n");
+    }
+}
+
+/* Movimiento usando estructura y apuntadores */
+void moverJugador(Jugador *jugadores, int numJugadores,
+                  int indiceJugador, int tirada) {
+    Jugador *j = &jugadores[indiceJugador];
+    Jugador copia;
+    int paso;
+    int i;
+
+    if (!j->activo) return;
+
+    /* copia para poder revertir si se pasa del centro */
+    copia = *j;
+
+    for (paso = 0; paso < tirada; paso++) {
+        if (j->enPuente) {
+            /* ya va por el puente */
+            if (j->puentePos == PUENTE_LONGITUD) {
+                /* ya esta en el centro, no puede avanzar mas */
+                printf("%s necesita numero exacto para llegar al centro.\n",
+                       j->nombre);
+                *j = copia;
+                actualizarCoordenadas(j);
+                return;
+            }
+            j->puentePos++;
+        } else {
+            /* se mueve por el borde */
+            j->perimIndex = (j->perimIndex + 1) % CASILLAS_PERIMETRO;
+            j->pasosPerimetro++;
+
+            /* despues de una vuelta completa puede entrar al puente
+               cuando cae en la casilla de entrada */
+            if (j->pasosPerimetro >= CASILLAS_PERIMETRO &&
+                j->perimIndex == PUENTE_ENTRADA_INDEX) {
+                j->enPuente = 1;
+                j->puentePos = 0; /* entrada, misma casilla del borde */
+            }
+        }
+    }
+
+    actualizarCoordenadas(j);
+
+    /* comer a otros jugadores (si no esta en el centro) */
+    if (!(j->enPuente && j->puentePos == PUENTE_LONGITUD)) {
+        for (i = 0; i < numJugadores; i++) {
+            if (i == indiceJugador) continue;
+            {
+                Jugador *otro = &jugadores[i];
+                if (!otro->activo) continue;
+                if (otro->enPuente && otro->puentePos == PUENTE_LONGITUD) continue;
+
+                if (otro->fila == j->fila && otro->col == j->col) {
+                    printf("%s ha comido a %s!\n", j->nombre, otro->nombre);
+                    otro->activo = 0;
+                }
+            }
+        }
+    }
+
+    if (j->enPuente && j->puentePos == PUENTE_LONGITUD) {
+        printf("%s ha llegado al centro del tablero.\n", j->nombre);
+    }
+}
+
+/* Verifica ganador: solo gana quien llega al centro */
+int verificarGanador(Jugador *jugadores, int numJugadores) {
+    int i;
+
+    for (i = 0; i < numJugadores; i++) {
+        Jugador *j = &jugadores[i];
+        if (j->activo && j->enPuente && j->puentePos == PUENTE_LONGITUD) {
+            return i;
+        }
+    }
+
+    return -1;
+}
+
+/* ------------------- main ------------------- */
+
+int main(void) {
+    int opcion = 0;
+
+    srand((unsigned int)time(NULL));
+
+    while (1) {
+        limpiarPantalla();
+        mostrarMenuPrincipal();
+
+        if (scanf("%d", &opcion) != 1) {
+            opcion = 0;
+        }
+        limpiarBufferEntrada();
+
+        switch (opcion) {
+            case 1:
+                mostrarReglas();
+                break;
+            case 2:
+                iniciarJuego();
+                break;
+            case 3:
+                printf("Saliendo del programa...\n");
+                return 0;
+            default:
+                printf("Opcion invalida.\n");
+                esperarEnter();
+                break;
+        }
+    }
+
+    return 0;
+}
